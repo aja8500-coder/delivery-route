@@ -425,7 +425,7 @@ details.panel summary::-webkit-details-marker { display: none; }
   // 주소 줄 다듬기: 앞뒤 찌꺼기 제거, "23 길21" → "23길 21"
   function cleanAddr(l) {
     return l
-      .replace(/[|¦│ㅣ\[\]{}<>_~`'"“”‘’•·]/g, " ")
+      .replace(/[|¦│ㅣ\[\]{}<>_~`'"“”‘’•·]/g, " ").trim()
       .replace(/^(받는\s?분|받는\s?사람|주소|수취인|\(구\)|\(舊\)|\(新\))\s*[:：]?\s*/, "")
       .replace(/^[^가-힣0-9(]+/, "")
       .replace(/[^가-힣0-9)]+$/, "")
