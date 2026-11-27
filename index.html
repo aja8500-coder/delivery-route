@@ -49,12 +49,14 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { margin: 0; }
-:root { padding-top: env(safe-area-inset-top, 0px); }
+/* 홈 화면 앱으로 열면 시계·배터리 줄 아래에서 시작 */
+.standalone body { padding-top: max(56px, calc(env(safe-area-inset-top, 0px) + 12px)) !important; }
 body {
+  padding-top: calc(env(safe-area-inset-top, 0px) + 12px);
   background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 16px; line-height: 1.5;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
-  padding-block: 12px calc(110px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px));
   -webkit-text-size-adjust: 100%;
 }
 main { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
@@ -420,9 +422,22 @@ details.panel summary::-webkit-details-marker { display: none; }
     if (/(운송장|송장번호|주문번호|보내는|받는\s?분|전화|연락처)/.test(l) && !/(로|길)\s?\d/.test(l)) s -= 2;
     return s;
   }
+  // 주소 줄 다듬기: 앞뒤 찌꺼기 제거, "23 길21" → "23길 21"
+  function cleanAddr(l) {
+    return l
+      .replace(/[|¦│ㅣ\[\]{}<>_~`'"“”‘’•·]/g, " ")
+      .replace(/^(받는\s?분|받는\s?사람|주소|수취인|\(구\)|\(舊\)|\(新\))\s*[:：]?\s*/, "")
+      .replace(/^[^가-힣0-9(]+/, "")
+      .replace(/[^가-힣0-9)]+$/, "")
+      .replace(/(\d)\s+(로|길)(?=\s|\d|$)/g, "$1$2")
+      .replace(/(로|길)(\d)/g, "$1 $2")
+      .replace(/(\d+)\s*번지/g, "$1")
+      .replace(/\s*께$/, "")
+      .replace(/\s+/g, " ").trim();
+  }
   function addressCandidates(text) {
-    const lines = text.split(/\n+/).map((l) => fixSpacing(l.replace(/[|_~`'"“”‘’]/g, " ").replace(/\s+/g, " ").trim())).filter((l) => l.length >= 4);
-    const scored = lines.map((l, i) => ({ l: l.replace(/^(받는\s?분|받는\s?사람|주소|수취인)\s*[:：]?\s*/, ""), i, s: scoreLine(l) }));
+    const lines = text.split(/\n+/).map((l) => fixSpacing(l.replace(/\s+/g, " ").trim())).map(cleanAddr).filter((l) => l.length >= 4);
+    const scored = lines.map((l, i) => ({ l, i, s: scoreLine(l) }));
     const good = scored.filter((x) => x.s >= 3).sort((a, b) => b.s - a.s);
     const out = [];
     for (const g of good) {
@@ -501,6 +516,7 @@ details.panel summary::-webkit-details-marker { display: none; }
           ${s.err ? `<div class="err">${esc(s.err)}</div>` : ""}
           <div class="row">
             <button class="small grow" data-act="find">이 주소로 위치 찾기</button>
+            ${s.status === "ok" ? `<button class="small primary" data-act="nav">티맵 안내</button>` : ""}
             <button class="small ghost" data-act="del" aria-label="배달지 ${i + 1} 삭제">삭제</button>
           </div>
         </div>`;
@@ -509,6 +525,7 @@ details.panel summary::-webkit-details-marker { display: none; }
       ta.addEventListener("blur", () => { if (s.text.trim() && s.status !== "ok" && appKey) resolveStop(s); });
       el.querySelectorAll("[data-cand]").forEach((b) => (b.onclick = () => { s.text = s.cands[+b.dataset.cand]; s.status = "check"; resolveStop(s); }));
       el.querySelector('[data-act="find"]').onclick = () => (appKey ? resolveStop(s) : openKey());
+      const navB = el.querySelector('[data-act="nav"]'); if (navB) navB.onclick = () => openTmap(s);
       el.querySelector('[data-act="del"]').onclick = () => { stops = stops.filter((x) => x !== s); route = null; render(); save(); };
       box.appendChild(el);
     });
@@ -547,11 +564,13 @@ details.panel summary::-webkit-details-marker { display: none; }
     const order = route.order.filter((id) => byId[id]);
     const done = route.done || [];
     const cur = order.find((id) => !done.includes(id));
-    $("sumDist").textContent = km(route.totalDist);
-    $("sumTime").textContent = mins(route.totalTime);
+    $("sumDist").textContent = route.single ? "-" : km(route.totalDist);
+    $("sumTime").textContent = route.single ? "-" : mins(route.totalTime);
     $("sumStops").textContent = order.length + "곳";
     $("progressPill").textContent = `${done.length}/${order.length} 완료`;
-    $("routeNote").textContent = `출발: ${route.start.label} · 도착: ${route.end.label}. 순서는 TMAP이 계산한 실제 도로 기준이며, 한 곳에 1분 머무는 것으로 계산했습니다.`;
+    $("routeNote").textContent = route.single
+      ? "배달지가 1곳이라 순서 계산 없이 바로 티맵으로 안내합니다. 거리와 시간은 티맵에서 확인하세요."
+      : `출발: ${route.start.label} · 도착: ${route.end.label}. 순서는 TMAP이 계산한 실제 도로 기준이며, 한 곳에 1분 머무는 것으로 계산했습니다.`;
     $("navCurrent").disabled = !cur;
     $("navCurrent").textContent = cur ? `${order.indexOf(cur) + 1}번 티맵 안내` : "모두 완료";
     const ol = $("routeList"); ol.innerHTML = "";
@@ -626,7 +645,7 @@ details.panel summary::-webkit-details-marker { display: none; }
     if (!appKey) return openKey();
     const btn = $("optimize");
     const filled = stops.filter((s) => s.text.trim());
-    if (filled.length < 2) { toast("배달지를 2곳 이상 넣어 주세요."); return; }
+    if (filled.length < 1) { toast("배달지를 1곳 이상 넣어 주세요."); return; }
     if (stops.some((s) => s.status === "reading")) { toast("사진을 아직 읽고 있습니다. 잠시만요."); return; }
     btn.disabled = true;
     try {
@@ -634,6 +653,14 @@ details.panel summary::-webkit-details-marker { display: none; }
       for (const s of filled) if (s.status !== "ok") await resolveStop(s);
       const bad = filled.filter((s) => s.status !== "ok");
       if (bad.length) { toast(`${bad.length}곳의 위치를 못 찾았습니다. 빨간 칸의 주소를 고쳐 주세요.`); return; }
+      if (filled.length === 1) {   // 1곳이면 순서 계산 없이 바로 안내
+        route = { order: [filled[0].id], legs: [], totalDist: 0, totalTime: 0, single: true,
+          start: { label: "현재 위치" }, end: { label: filled[0].text }, done: [], createdAt: Date.now() };
+        delete $("routeView").dataset.hide;
+        save(); render(); window.scrollTo(0, 0);
+        openTmap(filled[0]);
+        return;
+      }
       btn.textContent = "출발지 확인 중…";
       let start;
       if (startMode === "gps") start = await currentPosition();
@@ -668,6 +695,7 @@ details.panel summary::-webkit-details-marker { display: none; }
   const _renderRoute = renderRoute;
   renderRoute = function () { _renderRoute(); backBtn.hidden = !(route && $("routeView").dataset.hide); };
 
+  if (navigator.standalone || matchMedia("(display-mode: standalone)").matches) document.documentElement.classList.add("standalone");
   load(); renderKey(); render();
   if (!appKey) $("keyPanel").open = true;
 })();
