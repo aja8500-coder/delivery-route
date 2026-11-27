@@ -435,10 +435,19 @@ details.panel summary::-webkit-details-marker { display: none; }
       .replace(/\s*께$/, "")
       .replace(/\s+/g, " ").trim();
   }
-  function addressCandidates(text) {
-    const lines = text.split(/\n+/).map((l) => fixSpacing(l.replace(/\s+/g, " ").trim())).map(cleanAddr).filter((l) => l.length >= 4);
+  // 받는 분 / 보내는 분 표시 (글자 사이 띄어쓰기도 허용)
+  const RECV = /받\s*(?:으\s*시\s*)?는\s*(?:분|사\s*람|이)|수\s*[취령하신]\s*인|수\s*령\s*자|배\s*송\s*지\s*(?:주\s*소)?|도\s*착\s*지/;
+  const SEND = /보\s*내\s*(?:시\s*)?는\s*(?:분|사\s*람|이)|발\s*[송신]\s*인|송\s*하\s*인|출\s*발\s*지|반\s*품\s*지|주\s*문\s*자|판\s*매\s*자/;
+  const PROV = /(서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|충청|전북|전남|전라|경북|경남|경상|제주)/;
+  // 이름이 앞에 붙은 경우 "홍길동 서울시 …" → "서울시 …"
+  function cutToAddr(l) {
+    const m = l.match(PROV) || l.match(/[가-힣]{2,4}시\s[가-힣]{1,5}(구|군)/);
+    if (m && m.index > 0 && m.index <= 12) return l.slice(m.index);
+    return l;
+  }
+  function pickFrom(lines) {
     const scored = lines.map((l, i) => ({ l, i, s: scoreLine(l) }));
-    const good = scored.filter((x) => x.s >= 3).sort((a, b) => b.s - a.s);
+    const good = scored.filter((x) => x.s >= 3).sort((a, b) => b.s - a.s || a.i - b.i);
     const out = [];
     for (const g of good) {
       let c = g.l;
@@ -448,6 +457,42 @@ details.panel summary::-webkit-details-marker { display: none; }
       if (out.length >= 3) break;
     }
     return out;
+  }
+  const prep = (l) => cutToAddr(cleanAddr(l));
+  // 받는 분 주소만 고른다. 받는 분 표시가 없으면 보내는 분 칸만 빼고 고른다.
+  function addressCandidates(text) {
+    const raw = text.split(/\n+/).map((l) => fixSpacing(l.replace(/\s+/g, " ").trim())).filter(Boolean);
+    const recv = [];
+    for (let i = 0; i < raw.length; i++) {
+      const m = raw[i].match(RECV);
+      if (!m) continue;
+      // 표시가 있는 줄: 표시 뒤쪽만 (같은 줄에 보내는 분이 뒤에 오면 거기서 자름)
+      let first = raw[i].slice(m.index + m[0].length);
+      const sm = first.match(SEND);
+      if (sm) first = first.slice(0, sm.index);
+      recv.push(first);
+      // 다음 줄들: 보내는 분 표시나 다른 받는 분 표시가 나오면 멈춤, 최대 6줄
+      for (let j = i + 1; j < raw.length && j <= i + 6; j++) {
+        const sj = raw[j].match(SEND);
+        if (sj) { if (sj.index > 0) recv.push(raw[j].slice(0, sj.index)); break; }
+        if (RECV.test(raw[j])) break;
+        recv.push(raw[j]);
+      }
+    }
+    if (recv.length) {
+      const out = pickFrom(recv.map(prep).filter((l) => l.length >= 4));
+      return { list: out, labeled: true };
+    }
+    // 받는 분 표시가 없음: 보내는 분 칸(표시 줄 + 아래 6줄)만 빼고 전체에서 고름
+    const keep = [];
+    let skip = 0;
+    for (const l of raw) {
+      const sm = l.match(SEND);
+      if (sm) { if (sm.index > 0) keep.push(l.slice(0, sm.index)); skip = 6; continue; }
+      if (skip > 0) { skip--; continue; }
+      keep.push(l);
+    }
+    return { list: pickFrom(keep.map(prep).filter((l) => l.length >= 4)), labeled: false };
   }
 
   async function addPhotos(files) {
@@ -467,10 +512,12 @@ details.panel summary::-webkit-details-marker { display: none; }
         s.thumb = thumb; render();
         const w = await getOcr();
         const { data } = await w.recognize(blob);
-        const c = addressCandidates(data.text || "");
+        const r = addressCandidates(data.text || "");
+        const c = r.list;
         s.cands = c; s.text = c[0] || "";
         s.status = s.text ? "check" : "empty";
-        if (!s.text) s.err = "주소를 못 읽었습니다. 직접 입력해 주세요.";
+        s.note = s.text && !r.labeled ? "사진에서 '받는 분' 표시를 못 찾아 전체 글자에서 골랐습니다. 받는 분 주소가 맞는지 확인해 주세요." : "";
+        if (!s.text) s.err = "받는 분 주소를 못 읽었습니다. 직접 입력해 주세요.";
       } catch (e) { s.status = "empty"; s.err = e.message; }
       render(); save();
       if (s.text && appKey) resolveStop(s);
@@ -513,6 +560,7 @@ details.panel summary::-webkit-details-marker { display: none; }
         <div class="full" style="display:flex;flex-direction:column;gap:8px">
           ${s.cands.length > 1 ? `<div class="chips">${s.cands.map((c, k) => `<button class="chip" data-cand="${k}">${esc(c)}</button>`).join("")}</div>` : ""}
           ${s.resolved ? `<div class="resolved">지도 위치: ${esc(s.resolved)}</div>` : ""}
+          ${s.note ? `<div class="err" style="color:var(--muted,#777)">${esc(s.note)}</div>` : ""}
           ${s.err ? `<div class="err">${esc(s.err)}</div>` : ""}
           <div class="row">
             <button class="small grow" data-act="find">이 주소로 위치 찾기</button>
